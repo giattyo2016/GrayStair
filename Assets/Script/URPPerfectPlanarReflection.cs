@@ -8,24 +8,25 @@ using UnityEngine.Rendering.Universal;
 public class URPPerfectPlanarReflection : MonoBehaviour
 {
     [Header("鏡面設定")]
-    [Tooltip("材質使用的解析度 (1024為佳)")]
-    public int resolution = 1024;
+    [Tooltip("材質使用的解析度 (建議 512 或 256)")]
+    public int resolution = 512; // 【優化】：預設從 1024 降為 512
 
     [Range(0.0f, 0.1f)]
     [Tooltip("安全偏移量：防止自我破圖 (建議調 0.01)")]
     public float m_CullingSafetyOffset = 0.01f;
 
-    [Tooltip("哪些層級的物件會顯示在鏡子裡？")]
+    [Header("效能優化設定")]
+    [Tooltip("哪些層級的物件會顯示在鏡子裡？(千萬不要選 Everything)")]
     public LayerMask m_ReflectLayers = -1;
 
-    // 存放資源的字典
+    [Tooltip("是否在鏡子中運算即時陰影？(強烈建議關閉)")]
+    public bool renderMirrorShadows = false; // 【優化】：新增陰影開關，預設關閉
+
     private static Dictionary<Camera, Camera> m_ReflectionCameras = new Dictionary<Camera, Camera>();
 
     private RenderTexture m_ReflectionTexture;
     private Material m_DynamicMaterial;
     private bool isExecuting = false;
-
-    // 【新增】：用來抓取鏡子本體的渲染器，判斷它有沒有在畫面上
     private Renderer m_Renderer;
 
     void Awake()
@@ -70,21 +71,15 @@ public class URPPerfectPlanarReflection : MonoBehaviour
 
     void ExecutePlanarReflections(ScriptableRenderContext context, Camera camera)
     {
-        // 防呆機制
         if (isExecuting || !enabled || !gameObject.activeInHierarchy || camera.cameraType == CameraType.Reflection || camera.cameraType == CameraType.Preview)
             return;
 
-        // ==========================================
-        // 【效能優化魔法】：視錐體剔除 (Frustum Culling)
-        // 檢查這個攝影機的視野範圍，有沒有碰到鏡子的模型邊界。
-        // 如果玩家根本沒看著鏡子，我們就直接 return 罷工，省下巨量效能！
-        // ==========================================
         if (m_Renderer != null)
         {
             Plane[] planes = GeometryUtility.CalculateFrustumPlanes(camera);
             if (!GeometryUtility.TestPlanesAABB(planes, m_Renderer.bounds))
             {
-                return; // 沒看到鏡子？直接結束這回合，不浪費效能！
+                return;
             }
         }
 
@@ -104,7 +99,6 @@ public class URPPerfectPlanarReflection : MonoBehaviour
 
         UpdateReflectionCamera(camera, reflectionCamera);
 
-        // API 升級：SubmitRenderRequest
         UniversalRenderPipeline.SingleCameraRequest requestData = new UniversalRenderPipeline.SingleCameraRequest();
         requestData.destination = m_ReflectionTexture;
         RenderPipeline.SubmitRenderRequest(reflectionCamera, requestData);
@@ -147,7 +141,8 @@ public class URPPerfectPlanarReflection : MonoBehaviour
         reflectionCamera.useOcclusionCulling = false;
 
         var additionalData = reflectionCamera.GetUniversalAdditionalCameraData();
-        additionalData.renderShadows = true;
+        // 【優化】：套用我們上面設定的陰影開關，取代原本寫死的 true
+        additionalData.renderShadows = renderMirrorShadows;
         additionalData.renderPostProcessing = false;
 
         Transform mirrorPlane = transform;
@@ -160,7 +155,6 @@ public class URPPerfectPlanarReflection : MonoBehaviour
         Vector3 mirrorUp = Vector3.Reflect(realCamera.transform.up, mirrorPlane.forward);
         reflectionCamera.transform.rotation = Quaternion.LookRotation(mirrorForward, mirrorUp);
 
-        // 防透視魔法：斜錐體剔除平面 (Oblique Frustum)
         Vector4 worldPlane = CameraSpacePlane(reflectionCamera, mirrorPlane.position, mirrorPlane.forward, 1.0f);
         reflectionCamera.projectionMatrix = reflectionCamera.CalculateObliqueMatrix(worldPlane);
     }
