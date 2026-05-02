@@ -24,7 +24,8 @@ public class DoorController : MonoBehaviour
     private Quaternion closedRotation;
     private Quaternion openRotation;
 
-    private bool isOpen = false;
+    // 【修改這裡】：把 private 改成 public，讓玩家的射線能讀取它的狀態！
+    public bool isOpen = false;
 
     void Start()
     {

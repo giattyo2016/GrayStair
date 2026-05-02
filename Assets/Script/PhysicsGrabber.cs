@@ -1,4 +1,5 @@
 using UnityEngine;
+using TMPro; // 需要引用 TextMeshPro 來控制 UI
 
 public class PhysicsGrabber : MonoBehaviour
 {
@@ -18,12 +19,14 @@ public class PhysicsGrabber : MonoBehaviour
     [SerializeField] private KeyCode grabKey = KeyCode.E;       // 撿起按鍵
     [SerializeField] private KeyCode dropKey = KeyCode.Mouse0;  // 放下按鍵 (滑鼠左鍵)
 
-    // --- 新增：手動檢視旋轉的按鍵與靈敏度 ---
     [SerializeField] private KeyCode manualRotateKey = KeyCode.Mouse1; // 手動旋轉按鍵 (滑鼠右鍵)
     [SerializeField] private float manualRotateSensitivity = 3.0f;     // 滑鼠轉動物件的靈敏度
 
-    // 【新增】：讓外部腳本可以讀取的狀態變數！
-    // { get; private set; } 代表別人只能讀取，不能亂改它
+    [Header("UI & Highlight Settings")]
+    [SerializeField] private TextMeshProUGUI grabPromptText; // 拖曳你的 "按 E 互動" UI 到這裡
+    [ColorUsage(true, true)] // 允許開啟 HDR 高亮度顏色
+    [SerializeField] private Color highlightColor = new Color(0.2f, 0.2f, 0.2f, 1f); // 發光的顏色 (預設微亮白)
+
     public bool isInspecting { get; private set; } = false;
 
     private Camera playerCamera;
@@ -37,6 +40,11 @@ public class PhysicsGrabber : MonoBehaviour
     private Quaternion initialRotationOffset;
     private Vector3 localGrabOffset;
 
+    // --- 新增：紀錄目前瞄準到的物件，用來處理發光 ---
+    private GameObject currentTargetObject;
+    private Material[] targetOriginalMaterials;
+    private bool isHighlighting = false;
+
     void Start()
     {
         playerCamera = GetComponentInChildren<Camera>();
@@ -46,6 +54,12 @@ public class PhysicsGrabber : MonoBehaviour
         {
             Debug.LogError("PhysicsGrabber: 找不到 Camera 或 CharacterController，請檢查設定！");
             enabled = false;
+        }
+
+        // 遊戲開始時，確保提示文字是隱藏的
+        if (grabPromptText != null)
+        {
+            grabPromptText.gameObject.SetActive(false);
         }
     }
 
@@ -62,26 +76,28 @@ public class PhysicsGrabber : MonoBehaviour
             CheckIfStandingOnHeldObject();
         }
 
+        // ====================================================
+        // 核心邏輯：空手狀態時，不斷發射射線偵測前方物件
+        // ====================================================
         if (heldRigidbody == null)
         {
-            // 【新增】：如果手上沒東西，絕對不在檢視狀態
             isInspecting = false;
+            HandleRaycastAndHighlight(); // 處理準心對準與發光
 
-            if (Input.GetKeyDown(grabKey))
+            if (Input.GetKeyDown(grabKey) && currentTargetObject != null)
             {
+                // 如果有對準東西，而且按下了 E 鍵，就抓起來！
                 TryGrabObject();
             }
         }
         else
         {
-            // ==========================================
-            // 【新增邏輯】：按住右鍵時，旋轉手上的物件
-            // ==========================================
+            // 如果手上有拿著東西，強制關閉瞄準提示與發光
+            ClearTargetAndHighlight();
+
             if (Input.GetKey(manualRotateKey))
             {
-                // 【新增】：告訴全世界，我現在正在檢視！
                 isInspecting = true;
-
                 float mouseX = Input.GetAxis("Mouse X") * manualRotateSensitivity;
                 float mouseY = Input.GetAxis("Mouse Y") * manualRotateSensitivity;
 
@@ -92,13 +108,11 @@ public class PhysicsGrabber : MonoBehaviour
             }
             else
             {
-                // 【新增】：放開右鍵時，解除檢視狀態
                 isInspecting = false;
             }
 
             if (Input.GetKeyDown(dropKey))
             {
-                // 【新增】：把東西丟掉時，也解除檢視狀態
                 isInspecting = false;
                 ReleaseObject();
             }
@@ -113,6 +127,91 @@ public class PhysicsGrabber : MonoBehaviour
         }
     }
 
+    // ====================================================
+    // 新增：處理射線偵測、UI 顯示與材質發光
+    // ====================================================
+    private void HandleRaycastAndHighlight()
+    {
+        Ray ray = playerCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
+        RaycastHit hit;
+
+        // 如果射線有打到東西，且在抓取距離內
+        if (Physics.Raycast(ray, out hit, grabRange))
+        {
+            Rigidbody rb = hit.collider.GetComponent<Rigidbody>();
+
+            // 檢查是否是可以抓的物件
+            if (rb != null && (hit.collider.CompareTag("Grabbable") || hit.collider.GetComponent<Grabbable>() != null))
+            {
+                // 檢查是否太重
+                if (rb.mass <= playerMaxStrength)
+                {
+                    // 如果這是我這幀才剛看著的新物件，或者我一直看著它
+                    if (currentTargetObject != hit.collider.gameObject)
+                    {
+                        // 先清除舊的發光
+                        ClearTargetAndHighlight();
+                        // 記錄新的物件並讓它發光
+                        currentTargetObject = hit.collider.gameObject;
+                        ApplyHighlight(currentTargetObject);
+                    }
+
+                    // 顯示 UI
+                    if (grabPromptText != null) grabPromptText.gameObject.SetActive(true);
+                    return; // 成功找到可互動物件，結束這個函式
+                }
+            }
+        }
+
+        // 如果射線沒有打到任何可以抓的東西，或者距離太遠，清除所有的提示
+        ClearTargetAndHighlight();
+    }
+
+    private void ApplyHighlight(GameObject target)
+    {
+        if (isHighlighting) return;
+
+        Renderer renderer = target.GetComponent<Renderer>();
+        if (renderer != null)
+        {
+            // 讓物件的材質開啟 Emission (發光) 效果
+            foreach (Material mat in renderer.materials)
+            {
+                mat.EnableKeyword("_EMISSION");
+                mat.SetColor("_EmissionColor", highlightColor);
+            }
+            isHighlighting = true;
+        }
+    }
+
+    private void ClearTargetAndHighlight()
+    {
+        // 隱藏 UI
+        if (grabPromptText != null)
+        {
+            grabPromptText.gameObject.SetActive(false);
+        }
+
+        // 關閉發光
+        if (currentTargetObject != null && isHighlighting)
+        {
+            Renderer renderer = currentTargetObject.GetComponent<Renderer>();
+            if (renderer != null)
+            {
+                foreach (Material mat in renderer.materials)
+                {
+                    // 把發光顏色設定回黑色 (關閉發光)
+                    mat.SetColor("_EmissionColor", Color.black);
+                }
+            }
+            isHighlighting = false;
+        }
+
+        currentTargetObject = null;
+    }
+
+    // ====================================================
+
     private void TryGrabObject()
     {
         Ray ray = playerCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
@@ -121,7 +220,6 @@ public class PhysicsGrabber : MonoBehaviour
         if (Physics.Raycast(ray, out hit, grabRange))
         {
             Rigidbody rb = hit.collider.GetComponent<Rigidbody>();
-
             if (rb != null && (hit.collider.CompareTag("Grabbable") || hit.collider.GetComponent<Grabbable>() != null))
             {
                 if (rb.mass <= playerMaxStrength)
