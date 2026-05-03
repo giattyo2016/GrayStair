@@ -4,6 +4,9 @@ public class DoorController : MonoBehaviour
 {
     public enum DoorType { Sliding, Rotating }
 
+    // 【新增】：設定速度模式的選項
+    public enum SpeedMode { SameSpeed, SeparateSpeeds }
+
     [Header("門的類型設定")]
     public DoorType doorType = DoorType.Sliding;
 
@@ -16,15 +19,22 @@ public class DoorController : MonoBehaviour
     [Tooltip("如果發現門總是往你臉上拍，就把這個打勾反轉方向！")]
     public bool invertPushDirection = false;
 
-    [Header("共通設定")]
+    [Header("速度設定")]
+    [Tooltip("SameSpeed(A選項): 開關速度一樣 \nSeparateSpeeds(B選項): 可獨立調整開門與關門速度")]
+    public SpeedMode speedMode = SpeedMode.SameSpeed;
+
+    [Tooltip("開門的速度 (若為 SameSpeed，則開關門都看這個數值)")]
     public float openSpeed = 5.0f;
+
+    [Tooltip("關門的速度 (只有當上方選項切換為 SeparateSpeeds 時才有效)")]
+    public float closeSpeed = 5.0f;
 
     private Vector3 closedPosition;
     private Vector3 openPosition;
     private Quaternion closedRotation;
     private Quaternion openRotation;
 
-    // 【修改這裡】：把 private 改成 public，讓玩家的射線能讀取它的狀態！
+    // 讓玩家的射線能讀取它的狀態！
     public bool isOpen = false;
 
     void Start()
@@ -38,19 +48,29 @@ public class DoorController : MonoBehaviour
 
     void Update()
     {
+        // 【新增】：動態決定現在要用哪一個速度
+        float currentSpeed = openSpeed; // 預設使用開門速度 (A選項)
+
+        // 如果玩家選了 B 選項 (SeparateSpeeds)，且現在門的狀態是「關閉」，就切換成關門速度
+        if (speedMode == SpeedMode.SeparateSpeeds && !isOpen)
+        {
+            currentSpeed = closeSpeed;
+        }
+
+        // 下方的運算把原本寫死的 openSpeed，換成我們剛剛算出來的 currentSpeed
         if (doorType == DoorType.Sliding)
         {
             Vector3 targetPos = isOpen ? openPosition : closedPosition;
-            transform.localPosition = Vector3.Lerp(transform.localPosition, targetPos, Time.deltaTime * openSpeed);
+            transform.localPosition = Vector3.Lerp(transform.localPosition, targetPos, Time.deltaTime * currentSpeed);
         }
         else if (doorType == DoorType.Rotating)
         {
             Quaternion targetRot = isOpen ? openRotation : closedRotation;
-            transform.localRotation = Quaternion.Slerp(transform.localRotation, targetRot, Time.deltaTime * openSpeed);
+            transform.localRotation = Quaternion.Slerp(transform.localRotation, targetRot, Time.deltaTime * currentSpeed);
         }
     }
 
-    // 【新增】：專門給玩家手動按 F 用的「智慧雙向開關」
+    // 專門給玩家手動按 F 用的「智慧雙向開關」
     public void ToggleDoor(Vector3 interactorPosition)
     {
         isOpen = !isOpen; // 切換開關狀態
@@ -71,7 +91,7 @@ public class DoorController : MonoBehaviour
         }
     }
 
-    // 保持不變：給雷射接收器 (LaserSensor) 用的標準開關
+    // 給雷射接收器 (LaserSensor) 用的標準開關
     public void SetDoorState(bool state)
     {
         if (isOpen == state) return; // 狀態沒變就不做事
