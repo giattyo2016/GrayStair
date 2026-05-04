@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -12,7 +13,9 @@ public class PlayerLaserPointer : MonoBehaviour
 
     [Header("雷射設定")]
     public float laserRange = 50f;
-    public LayerMask laserHitMask;
+    // 【修改】：我們把麻煩的 laserHitMask 刪掉了！
+    [Tooltip("手電筒最多可以折射/穿透幾次？")]
+    public int maxBounces = 3;
 
     [Header("電池與 UI 設定")]
     public float maxBattery = 100f;
@@ -32,7 +35,6 @@ public class PlayerLaserPointer : MonoBehaviour
 
     void Awake()
     {
-        // 把 GetComponent 移到 Awake，確保 OnEnable 時絕對找得到它
         lineRenderer = GetComponent<LineRenderer>();
     }
 
@@ -42,16 +44,11 @@ public class PlayerLaserPointer : MonoBehaviour
         lineRenderer.startWidth = 0.05f;
         lineRenderer.endWidth = 0.05f;
 
-        // 如果還沒撿起來，一開始先藏好 UI
         if (!hasPickedUp && uiContainer != null) uiContainer.SetActive(false);
     }
 
-    // ================== 核心：拔槍與收槍邏輯 ==================
-
-    // 當這個物件被 SetActive(true) 時會自動觸發 (例如滾輪切換過來)
     void OnEnable()
     {
-        // 只有當玩家已經解鎖這個道具時，才顯示 UI
         if (hasPickedUp && uiContainer != null)
         {
             uiContainer.SetActive(true);
@@ -59,16 +56,12 @@ public class PlayerLaserPointer : MonoBehaviour
         }
     }
 
-    // 當這個物件被 SetActive(false) 時會自動觸發 (例如滾輪切換走)
     void OnDisable()
     {
-        // 【強制收槍】：把雷射光關掉、開關切換為 off，並且隱藏 UI
         isLaserToggledOn = false;
         if (lineRenderer != null) lineRenderer.enabled = false;
         if (uiContainer != null) uiContainer.SetActive(false);
     }
-
-    // =========================================================
 
     void Update()
     {
@@ -129,26 +122,63 @@ public class PlayerLaserPointer : MonoBehaviour
 
     private void ShootLaser()
     {
-        Vector3 startPoint = (firePoint != null) ? firePoint.position : transform.position;
-        Vector3 rayDir = (firePoint != null) ? firePoint.forward : transform.forward;
+        List<Vector3> laserPoints = new List<Vector3>();
 
-        Vector3 endPoint = startPoint + rayDir * laserRange;
+        Vector3 currentPos = (firePoint != null) ? firePoint.position : transform.position;
+        Vector3 currentDir = (firePoint != null) ? firePoint.forward : transform.forward;
 
-        if (Physics.Raycast(startPoint, rayDir, out RaycastHit hit, laserRange, laserHitMask))
+        laserPoints.Add(currentPos);
+        float remainingDistance = laserRange;
+
+        for (int i = 0; i < maxBounces; i++)
         {
-            endPoint = hit.point;
-
-            ILaserReceiver receiver = hit.collider.GetComponent<ILaserReceiver>();
-            if (receiver != null)
+            // 【修改】：不使用 Mask，直接射出雷射！
+            if (Physics.Raycast(currentPos, currentDir, out RaycastHit hit, remainingDistance))
             {
-                float remaining = laserRange - hit.distance;
-                Vector3 nextStart, nextDir;
-                receiver.ProcessLaser(hit.point, hit.normal, rayDir, hit.collider, ref remaining, null, out nextStart, out nextDir);
+                // ==========================================
+                // 【終極防呆密技】：自動無視玩家自己
+                // 檢查打到的東西是不是跟雷射槍屬於同一個身體 (Player)
+                // ==========================================
+                if (hit.collider.transform.root == this.transform.root)
+                {
+                    // 把射線起點稍微往前推一點 (穿進玩家身體)，然後繼續射
+                    // Unity 的物理引擎會自動忽略起點在內部的碰撞體
+                    currentPos = hit.point + currentDir * 0.05f;
+                    remainingDistance -= hit.distance;
+                    i--; // 抵銷這回合的迴圈，不扣折射次數
+                    continue;
+                }
+
+                laserPoints.Add(hit.point);
+                remainingDistance -= hit.distance;
+
+                ILaserReceiver receiver = hit.collider.GetComponent<ILaserReceiver>();
+                if (receiver != null)
+                {
+                    bool continueLaser = receiver.ProcessLaser(
+                        hit.point, hit.normal, currentDir, hit.collider,
+                        ref remainingDistance, laserPoints,
+                        out currentPos, out currentDir
+                    );
+
+                    if (!continueLaser) break;
+                }
+                else
+                {
+                    break; // 打到一般牆壁，乖乖停下來
+                }
             }
+            else
+            {
+                laserPoints.Add(currentPos + currentDir * remainingDistance);
+                break;
+            }
+
+            if (remainingDistance <= 0) break;
         }
 
-        lineRenderer.SetPosition(0, startPoint);
-        lineRenderer.SetPosition(1, endPoint);
+        lineRenderer.positionCount = laserPoints.Count;
+        lineRenderer.SetPositions(laserPoints.ToArray());
     }
 
     private bool CheckForCloneInterference()
@@ -175,10 +205,7 @@ public class PlayerLaserPointer : MonoBehaviour
         currentBattery = maxBattery;
         isLaserToggledOn = false;
 
-        // 第一次撿起來的瞬間，強制開啟 UI
         if (uiContainer != null) uiContainer.SetActive(true);
         UpdateBatteryUI();
-
-        Debug.Log("<color=green>[系統]</color> 獲得雷射筆並充滿電！");
     }
 }
